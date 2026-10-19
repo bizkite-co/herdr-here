@@ -1,0 +1,18 @@
+# Open the hovered directory in Herdr. A hovered file uses its parent directory.
+# Yazi stays suspended until you detach (ctrl+b q).
+[[mgr.prepend_keymap]]
+on  = [ "g", "r" ]
+run = '''
+shell --block -- bash -c '
+	target=$1
+	if [[ -z "$target" ]]; then
+		printf "herdr: nothing hovered\n" >&2
+		exit 1
+	fi
+	if [[ ! -d "$target" ]]; then
+		target=$(dirname -- "$target")
+	fi
+	exec herdr-here "$target"
+' bash %h
+'''
+desc = "Open this directory in Herdr"

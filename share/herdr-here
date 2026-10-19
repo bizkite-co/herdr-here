@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# Attach this terminal to the Herdr workspace for the current directory.
+# Resumes a terminal that no other herdr-here client is holding, or creates one.
+set -euo pipefail
+
+if [[ "${HERDR_ENV:-}" == "1" ]]; then
+  printf 'herdr-here: this shell is already inside Herdr.\n' >&2
+  exit 1
+fi
+
+if [[ -x "$HOME/.local/share/mise/installs/herdr/latest/herdr" ]]; then
+  HERDR="$HOME/.local/share/mise/installs/herdr/latest/herdr"
+elif command -v herdr >/dev/null 2>&1; then
+  HERDR=$(command -v herdr)
+else
+  printf 'herdr-here: herdr is not installed.\n' >&2
+  exit 1
+fi
+export HERDR
+
+start=${1:-$PWD}
+# C:\foo and C:/foo are Windows paths. Herdr runs in Debian, so convert them first.
+if [[ "$start" =~ ^[A-Za-z]:[\\/] ]]; then
+  if ! start=$(wslpath -u "$start"); then
+    printf 'herdr-here: cannot convert Windows path: %s\n' "$1" >&2
+    exit 1
+  fi
+fi
+if [[ ! -d "$start" ]]; then
+  printf 'herdr-here: not a directory: %s\n' "$start" >&2
+  exit 1
+fi
+start=$(cd -- "$start" && pwd -P)
+root=$start
+if git -C "$start" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  root=$(cd -- "$(git -C "$start" rev-parse --show-toplevel)" && pwd -P)
+fi
+label=$(basename -- "$root")
+export HERDR_ROOT=$root
+export HERDR_LABEL=$label
+
+# A reboot stops the server. herdr-here is the explicit request for a pane,
+# so bring the default server up instead of making that a second command.
+# This does not run from bashrc, and it does not open the dashboard.
+ensure_server() {
+  if "$HERDR" status server --json 2>/dev/null | grep -q '"running":true'; then
+    return 0
+  fi
+  local log=${XDG_CONFIG_HOME:-$HOME/.config}/herdr/herdr-server.log
+  printf 'herdr-here: starting Herdr\n' >&2
+  # setsid keeps the server alive after this terminal attaches or closes.
+  # Drop NO_COLOR and the other color-off switches. Panes inherit the server
+  # environment, and a parent that disables color turns agent highlighting off.
+  setsid env \
+    -u NO_COLOR \
+    CLICOLOR=1 \
+    COLORTERM=truecolor \
+    FORCE_COLOR=1 \
+    TERM=xterm-256color \
+    "$HERDR" server >>"$log" 2>&1 </dev/null &
+  local pid=$!
+  local _
+  for _ in $(seq 1 75); do
+    if "$HERDR" status server --json 2>/dev/null | grep -q '"running":true'; then
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf 'herdr-here: Herdr exited while starting. See %s\n' "$log" >&2
+      exit 1
+    fi
+    sleep 0.2
+  done
+  printf 'herdr-here: Herdr did not come up. See %s\n' "$log" >&2
+  exit 1
+}
+ensure_server
+
+lock_root=${XDG_CONFIG_HOME:-$HOME/.config}/herdr/wt-attach
+mkdir -p -- "$lock_root"
+chmod 700 "$lock_root"
+
+# Print a terminal id on stdout. Creates a tab, or a workspace, when none exists.
+pick_or_create() {
+  python3 - "$HERDR_ROOT" "$HERDR_LABEL" <<'PY'
+import json, os, subprocess, sys
+
+root, label = sys.argv[1], sys.argv[2]
+herdr = os.environ["HERDR"]
+
+def run(args):
+    proc = subprocess.run([herdr, *args], capture_output=True, text=True)
+    text = (proc.stdout or "") + (proc.stderr or "")
+    start = text.find("{")
+    if proc.returncode != 0 or start < 0:
+        sys.stderr.write(text or f"herdr {' '.join(args)} failed\n")
+        sys.exit(proc.returncode or 1)
+    return json.loads(text[start:])
+
+def real(path):
+    try:
+        return os.path.realpath(path)
+    except OSError:
+        return path
+
+data = run(["pane", "list"])
+panes = data.get("result", {}).get("panes", [])
+matched = []
+for pane in panes:
+    if real(pane.get("cwd") or "") != root:
+        continue
+    terminal_id = pane.get("terminal_id")
+    workspace_id = pane.get("workspace_id")
+    if terminal_id and workspace_id:
+        matched.append((terminal_id, workspace_id))
+
+if matched:
+    # Prefer an existing terminal. The shell tries each lock in this order.
+    sys.stdout.write("resume\n")
+    for terminal_id, _workspace_id in matched:
+        sys.stdout.write(terminal_id + "\n")
+    sys.exit(0)
+
+args = [
+    "workspace", "create",
+    "--cwd", root,
+    "--label", label,
+    "--no-focus",
+]
+wt = os.environ.get("HERDR_WT")
+if wt:
+    args.extend(["--env", f"HERDR_WT={wt}"])
+created = run(args)
+terminal_id = created["result"]["root_pane"]["terminal_id"]
+sys.stdout.write("created\n")
+sys.stdout.write(terminal_id + "\n")
+PY
+}
+
+# Create another terminal in the workspace that already has this root.
+create_in_workspace() {
+  local workspace_id=$1
+  python3 - "$workspace_id" "$HERDR_ROOT" "$HERDR_LABEL" <<'PY'
+import json, os, subprocess, sys
+
+workspace_id, root, label = sys.argv[1], sys.argv[2], sys.argv[3]
+herdr = os.environ["HERDR"]
+args = [herdr, "tab", "create", "--workspace", workspace_id, "--cwd", root, "--label", label, "--no-focus"]
+wt = os.environ.get("HERDR_WT")
+if wt:
+    args.extend(["--env", f"HERDR_WT={wt}"])
+proc = subprocess.run(args, capture_output=True, text=True)
+text = (proc.stdout or "") + (proc.stderr or "")
+start = text.find("{")
+if proc.returncode != 0 or start < 0:
+    sys.stderr.write(text or "herdr tab create failed\n")
+    sys.exit(proc.returncode or 1)
+data = json.loads(text[start:])
+sys.stdout.write(data["result"]["root_pane"]["terminal_id"] + "\n")
+PY
+}
+
+workspace_for_root() {
+  python3 - "$HERDR_ROOT" <<'PY'
+import json, os, subprocess, sys
+
+root = sys.argv[1]
+herdr = os.environ["HERDR"]
+proc = subprocess.run([herdr, "pane", "list"], capture_output=True, text=True)
+text = (proc.stdout or "") + (proc.stderr or "")
+start = text.find("{")
+if proc.returncode != 0 or start < 0:
+    sys.exit(0)
+data = json.loads(text[start:])
+for pane in data.get("result", {}).get("panes", []):
+    try:
+        cwd = os.path.realpath(pane.get("cwd") or "")
+    except OSError:
+        cwd = pane.get("cwd") or ""
+    if cwd == root and pane.get("workspace_id"):
+        print(pane["workspace_id"])
+        break
+PY
+}
+
+hold_lock() {
+  local terminal_id=$1
+  local path=$lock_root/${terminal_id}.lock
+  exec 9>"$path"
+  if flock -n 9; then
+    return 0
+  fi
+  exec 9>&-
+  return 1
+}
+
+attach() {
+  local terminal_id=$1
+  flock -u 8
+  exec 8>&-
+  "$HERDR" terminal attach "$terminal_id"
+  exit $?
+}
+
+exec 8>"$lock_root/create.lock"
+flock 8
+
+mapfile -t choice < <(pick_or_create)
+mode=${choice[0]:-}
+if [[ "$mode" == "resume" ]]; then
+  for terminal_id in "${choice[@]:1}"; do
+    [[ -n "$terminal_id" ]] || continue
+    if hold_lock "$terminal_id"; then
+      attach "$terminal_id"
+    fi
+  done
+  workspace_id=$(workspace_for_root || true)
+  if [[ -n "${workspace_id:-}" ]]; then
+    terminal_id=$(create_in_workspace "$workspace_id")
+  else
+    mapfile -t created < <(pick_or_create)
+    terminal_id=${created[1]:-}
+  fi
+elif [[ "$mode" == "created" ]]; then
+  terminal_id=${choice[1]:-}
+else
+  printf 'herdr-here: could not choose a Herdr terminal.\n' >&2
+  exit 1
+fi
+
+if [[ -z "${terminal_id:-}" ]]; then
+  printf 'herdr-here: Herdr did not return a terminal id.\n' >&2
+  exit 1
+fi
+if ! hold_lock "$terminal_id"; then
+  printf 'herdr-here: terminal %s is already attached.\n' "$terminal_id" >&2
+  exit 1
+fi
+attach "$terminal_id"

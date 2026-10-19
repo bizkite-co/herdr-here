@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Open the full Herdr dashboard.
+# The Windows Terminal "Herdr" profile sets HERDR_DASH=1 and execs this script.
+# From any other shell, this opens that profile in a new tab.
+set -euo pipefail
+
+if [[ -x "$HOME/.local/share/mise/installs/herdr/latest/herdr" ]]; then
+  HERDR="$HOME/.local/share/mise/installs/herdr/latest/herdr"
+elif command -v herdr >/dev/null 2>&1; then
+  HERDR=$(command -v herdr)
+else
+  printf 'herdr-dash: herdr is not installed.\n' >&2
+  exit 1
+fi
+
+if [[ "${HERDR_DASH:-}" == "1" ]]; then
+  if [[ "${HERDR_ENV:-}" == "1" ]]; then
+    printf 'herdr-dash: this shell is already inside Herdr.\n' >&2
+    exit 1
+  fi
+  exec "$HERDR"
+fi
+
+# The last line of cmd.exe output is the value. A banner, if any, stays above it.
+win_value() {
+  cmd.exe /d /c "echo $1" 2>/dev/null | tr -d '\r' | tail -n 1
+}
+
+wt_exe() {
+  local pkg=""
+  case "${HERDR_WT:-}" in
+    canary) pkg=Microsoft.WindowsTerminalCanary_8wekyb3d8bbwe ;;
+    preview) pkg=Microsoft.WindowsTerminalPreview_8wekyb3d8bbwe ;;
+    stable) pkg=Microsoft.WindowsTerminal_8wekyb3d8bbwe ;;
+  esac
+  if [[ -n "$pkg" ]]; then
+    local user candidate
+    user=$(win_value '%USERNAME%')
+    candidate="/mnt/c/Users/${user}/AppData/Local/Microsoft/WindowsApps/${pkg}/wt.exe"
+    if [[ -e "$candidate" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+  if command -v wt.exe >/dev/null 2>&1; then
+    command -v wt.exe
+    return 0
+  fi
+  printf 'herdr-dash: wt.exe was not found.\n' >&2
+  return 1
+}
+
+wt=$(wt_exe)
+if "$wt" -w 0 new-tab --profile "Herdr"; then
+  exit 0
+fi
+exec "$wt" new-tab --profile "Herdr"
