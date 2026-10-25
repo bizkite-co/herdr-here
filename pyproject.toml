@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herdr-here"
+version = "0.1.1"
+description = "Windows Terminal profiles that direct-attach to one Herdr workspace per directory"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+keywords = ["herdr", "windows-terminal", "wsl"]
+classifiers = [
+  "Environment :: Console",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+]
+
+[project.scripts]
+herdr-here-install = "herdr_here.install:main"
+herdr-dash = "herdr_here.dash:main"
+
+[dependency-groups]
+dev = ["verkit>=0.2.1"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+script-files = [
+  "src/herdr_here/share/herdr-here",
+  "src/herdr_here/share/herdr-dash",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+herdr_here = ["share/*"]

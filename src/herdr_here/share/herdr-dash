@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+"""Launcher for herdr-dash."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+try:
+    from herdr_here.dash import main
+except ImportError:
+    this = Path(__file__).resolve()
+    for p in (
+        this.parent.parent.parent,
+        this.parent.parent,
+        this.parent,
+    ):
+        if (p / "herdr_here" / "dash.py").is_file():
+            sys.path.insert(0, str(p))
+            break
+    if "herdr_here" not in sys.modules:
+        uv_tools = Path.home() / ".local/share/uv/tools/herdr-here/lib"
+        for site_pkg in uv_tools.glob("python*/site-packages"):
+            if (site_pkg / "herdr_here" / "dash.py").is_file():
+                sys.path.insert(0, str(site_pkg))
+                break
+    from herdr_here.dash import main
+
+if __name__ == "__main__":
+    sys.exit(main())

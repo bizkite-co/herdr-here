@@ -1,0 +1,16 @@
+# Local checkout of verkit is used when it exists. CI and users get PyPI.
+[env]
+VERKIT_DEV = "{{ env.HOME }}/repos/verkit"
+UV_NO_SYNC = "1"
+
+[tasks.install]
+description = "Sync the venv and prefer the local verkit checkout"
+run = '''
+uv sync
+if [ -d "$VERKIT_DEV" ]; then uv pip install -e "$VERKIT_DEV"; fi
+'''
+
+[tasks.release]
+description = "Bump version, tag, and push. The v* tag publishes to PyPI."
+usage = 'arg "[part]" default="patch" help="major, minor, or patch"'
+run = "uv run verkit release {{usage.part}}"
